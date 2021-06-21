@@ -1,9 +1,5 @@
 #include <Arduino.h>
-#include <Adafruit_TinyUSB.h> // for Serial
-#include <Wire.h>
 #include <bluefruit.h>
-
-#define KEY_PRESS_PIN 7
 
 /**
  * Adafruit BLE classes
@@ -11,88 +7,116 @@
 BLEDis bledis;
 BLEHidAdafruit blehid;
 
-const int  adc_address=41;   // I2C Address
-int flag_esc = 0;
+byte inByte;
+char hidReport[23];
+int  byteIndex;
+bool skipSeg = false;
 
-bool key_pressed = false;
+/**
+ * Raw Keycodes
+ */
+uint8_t modifier;
+uint8_t keys[6];
 
 void setup()
 {
-  pinMode(KEY_PRESS_PIN, INPUT);
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
-  Wire.begin();
-  while ( !Serial ) delay(10);   // for nrf52840 with native usb
-
+  Serial1.begin(9600);
   initBluetooth();
   startAdv();
 }
 
 void loop() // run over and over//
 {
-  char char_count;
-  int key_char;
-  int pressSensor = digitalRead(KEY_PRESS_PIN);
+  if (Serial1.available() > 0) {
+    inByte = Serial1.read();
 
-  if (!key_pressed && pressSensor) {
-    // Key Pressed
-    key_pressed = true;
-  } else if (key_pressed && !pressSensor) {
-    // Key Released
-    key_pressed = false;
-    blehid.keyRelease();
+    Serial.write(inByte);
+
+    if ((int) inByte == 10) {
+      skipSeg = false;
+    }
+
+    // The USB Host sends line breaks which are 10 & 13 in decimal
+    if ((int) inByte != 10 && (int) inByte != 13 && skipSeg != true) {
+      // Only care about first 23 bytes
+      if (byteIndex < 23) {
+        hidReport[byteIndex] = (char) inByte;
+      }
+
+      byteIndex ++;
+
+      if (byteIndex == 23) {
+        assignKeyCodes(hidReport);
+        sendReport(modifier, keys);
+        // Reset and move on to next key segment
+        byteIndex = 0;
+        memset(hidReport, 0, 23);
+        skipSeg = true;
+      }
+    }
   }
-
-  Wire.beginTransmission(adc_address); // transmit to device
-  Wire.write(1);                       // ask how many characters are in buffer
-  Wire.endTransmission();              // stop transmitting
-  Wire.requestFrom(adc_address, 1);    // request 1 bytes from slave device
-  while(Wire.available())
-    {
-      char_count = Wire.read();
-    }
-
-  Wire.beginTransmission(adc_address); // transmit to device
-  Wire.write(0);                       // get keyboard characters
-  Wire.endTransmission();              // stop transmitting
-  Wire.requestFrom(adc_address, char_count);    // request characters from slave device
-
-  ///////////////////////////////////////////////////
-  //
-  //  We have a keystroke. Let's do something!
-  //
-  ///////////////////////////////////////////////////
-
-  while(Wire.available())
-    {
-      key_char = Wire.read();
-      if(key_char == 27 && flag_esc == 0)
-        {
-          flag_esc = 1;
-        }
-      else
-        {
-          if(flag_esc==1)
-            {
-              // Previous char was ESC - Decode all the escaped keys
-
-              // Send Keypress
-              //
-
-              blehid.keyPress(key_char);
-              flag_esc=0;
-            }
-          else
-            {
-              // Skip 10 & 13
-              if (key_char != 10 || key_char != 13) {
-                blehid.keyPress(key_char);
-              }
-            }
-        }
-    }
+  __WFI();
 }
 
+/**
+ * Takes a hex code in string format
+ * and converts it into a raw byte
+ * of the same hex value
+ */
+uint8_t stringToHex(char* keyCode) {
+  uint8_t hexByte = (uint8_t) strtoul(keyCode, NULL ,16);
+  return hexByte;
+}
+
+/**
+ * Parse HID Report array and assigns
+ * respective hex bytes to variables
+ */
+void assignKeyCodes(char* hidReport) {
+
+  char keyCode[2];
+
+  // Modifier
+  keyCode[0] = hidReport[0];
+  keyCode[1] = hidReport[1];
+  modifier = stringToHex(keyCode);
+
+  //Key0
+  keyCode[0] = hidReport[6];
+  keyCode[1] = hidReport[7];
+  keys[0] = stringToHex(keyCode);
+
+  //Key1
+  keyCode[0] = hidReport[9];
+  keyCode[1] = hidReport[10];
+  keys[1] = stringToHex(keyCode);
+
+  //Key2
+  keyCode[0] = hidReport[12];
+  keyCode[1] = hidReport[13];
+  keys[2] = stringToHex(keyCode);
+
+  //Key3
+  keyCode[0] = hidReport[15];
+  keyCode[1] = hidReport[16];
+  keys[3] = stringToHex(keyCode);
+
+  //Key4
+  keyCode[0] = hidReport[18];
+  keyCode[1] = hidReport[19];
+  keys[4] = stringToHex(keyCode);
+
+  //Key5
+  keyCode[0] = hidReport[21];
+  keyCode[1] = hidReport[22];
+  keys[5] = stringToHex(keyCode);
+}
+
+void sendReport(uint8_t modifier, uint8_t* keys){
+  blehid.keyboardReport(modifier, keys);
+}
 
 void initBluetooth() {
   Bluefruit.begin();
@@ -102,7 +126,7 @@ void initBluetooth() {
   // On-board blue LED: On (true) / Off (false)
   Bluefruit.autoConnLed(true);
 
-  bledis.setManufacturer("Mike Wu");
+  bledis.setManufacturer("Ryan Mulligan");
   bledis.setModel("Kinesis Advantage 2");
 
   bledis.begin();
